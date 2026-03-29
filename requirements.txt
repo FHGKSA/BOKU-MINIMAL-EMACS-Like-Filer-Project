@@ -1,0 +1,15 @@
+# 2pane TUI Filer は Python標準ライブラリのみを使用します
+# Python 3.7+ 必須
+
+# 標準ライブラリを使用:
+# - curses (TUIインターフェース)
+# - pathlib (パス操作)
+# - configparser (設定ファイル)
+# - shutil (ファイル操作)
+# - os, sys (システム関数)
+# - locale (国際化対応)
+# - threading (非同期処理)
+# - stat (ファイル情報)
+# - pwd, grp (ユーザー・グループ情報)
+
+# 外部依存関係なし - 軽量性を重視
