@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
-[![Version: Beta](https://img.shields.io/badge/version-0.2.0--beta-orange.svg)](VERSION)
+[![Version: Beta](https://img.shields.io/badge/version-0.2.1--beta-orange.svg)](VERSION)
 
 Emacsスタイルのキーバインドを持つ2ペインTUIファイラー（Beta版）
 
@@ -186,7 +186,25 @@ default_sort = name
 default_editor = vi
 default_shell = /bin/bash
 ```
+## 🎆 v0.2.1-beta の新機能
 
+### 🗺️ In-Windowダイアログシステム
+- **長いパス対応**: ファイルパスが長い場合に画面中央に詳細ウィンドウを表示
+- **直観的UI**: 転送元と転送先を看直的に表示
+- **汎用設計**: 今後も様々な場面で活用可能
+
+```
+┌───────────────────────────────────┐
+│        ファイルコピーの確認        │
+│                                  │
+│  転送元: /very/long/path/to/file  │
+│       |                         │
+│       |                         │
+│  転送先: /another/long/path      │
+│                                  │
+│        [*はい] [ いいえ]        │
+└───────────────────────────────────┘
+```
 ## 🎯 v0.2.0-beta の新機能
 
 ### 🔄 ファイル操作機能
@@ -210,7 +228,7 @@ default_shell = /bin/bash
 - **改良されたカラム表示**: `<DIR>`表示の位置修正
 - **安定した表示**: 表示崩れの問題を解決
 
-## 🔧 開発状況（v0.2.0-beta）
+## 🔧 開発状況（v0.2.1-beta）
 
 ### ✅ 実装済み機能
 - [x] **プロジェクト構造**: 完全なモジュール分離設計

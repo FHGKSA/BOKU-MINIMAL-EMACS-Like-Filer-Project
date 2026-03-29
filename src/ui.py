@@ -568,6 +568,162 @@ class StatusBar:
             pass
 
 
+class InWindowDialog:
+    """画面中央表示ダイアログクラス"""
+    
+    def __init__(self, title: str, content: List[str], options: List[str], 
+                 selected: int = 0, color_manager=None):
+        """
+        初期化
+        
+        Args:
+            title: ダイアログタイトル
+            content: 表示する内容行のリスト
+            options: 選択肢のリスト  
+            selected: 選択されている選択肢のインデックス
+            color_manager: 色管理オブジェクト
+        """
+        self.title = title
+        self.content = content
+        self.options = options
+        self.selected = selected
+        self.color_manager = color_manager
+        
+        # ウィンドウサイズ計算
+        self._calculate_window_size()
+    
+    def _calculate_window_size(self):
+        """ウィンドウサイズの計算"""
+        # 最小サイズ
+        min_width = 40
+        min_height = 8
+        
+        # コンテンツからサイズを計算
+        content_width = max([get_display_width(line) for line in self.content + [self.title]] + [20])
+        options_text = "  ".join([f"[{opt}]" for opt in self.options])
+        options_width = get_display_width(options_text)
+        
+        # 必要な幅（枠+パディング込み）
+        self.width = max(min_width, content_width + 4, options_width + 4)
+        self.height = max(min_height, len(self.content) + 6)  # タイトル+枠+選択肢+余白
+        
+        # 最大サイズ制限（画面の80%まで）
+        max_width = int(curses.COLS * 0.8)
+        max_height = int(curses.LINES * 0.8)
+        
+        self.width = min(self.width, max_width)
+        self.height = min(self.height, max_height)
+    
+    def draw(self, stdscr):
+        """ダイアログの描画"""
+        # 画面中央に配置
+        start_y = max(0, (curses.LINES - self.height) // 2)
+        start_x = max(0, (curses.COLS - self.width) // 2)
+        
+        # 背景をクリア（影効果）
+        try:
+            for y in range(start_y, min(curses.LINES, start_y + self.height + 1)):
+                for x in range(start_x, min(curses.COLS, start_x + self.width + 2)):
+                    if y < curses.LINES and x < curses.COLS:
+                        stdscr.addch(y, x, ' ', curses.A_REVERSE)
+        except curses.error:
+            pass
+        
+        # ウィンドウ枠の描画
+        self._draw_frame(stdscr, start_y, start_x)
+        
+        # タイトル描画
+        title_x = start_x + (self.width - get_display_width(self.title)) // 2
+        try:
+            stdscr.addstr(start_y + 1, title_x, self.title, curses.A_BOLD)
+        except curses.error:
+            pass
+        
+        # コンテンツ描画
+        for i, line in enumerate(self.content):
+            if i >= self.height - 5:  # 選択肢用のスペースを確保
+                break
+            y = start_y + 3 + i
+            # 左揃えでコンテンツを表示
+            try:
+                display_line = truncate_string_by_width(line, self.width - 4)
+                stdscr.addstr(y, start_x + 2, display_line)
+            except curses.error:
+                pass
+        
+        # 選択肢描画
+        self._draw_options(stdscr, start_y, start_x)
+    
+    def _draw_frame(self, stdscr, start_y: int, start_x: int):
+        """ウィンドウ枠の描画"""
+        # 上下の線
+        try:
+            stdscr.addstr(start_y, start_x, "┌" + "─" * (self.width - 2) + "┐")
+            stdscr.addstr(start_y + self.height - 1, start_x, "└" + "─" * (self.width - 2) + "┘")
+        except curses.error:
+            # ASCII fallback
+            try:
+                stdscr.addstr(start_y, start_x, "+" + "-" * (self.width - 2) + "+")
+                stdscr.addstr(start_y + self.height - 1, start_x, "+" + "-" * (self.width - 2) + "+")
+            except curses.error:
+                pass
+        
+        # 左右の線
+        for y in range(start_y + 1, start_y + self.height - 1):
+            try:
+                stdscr.addch(y, start_x, "│")
+                stdscr.addch(y, start_x + self.width - 1, "│")
+            except curses.error:
+                try:
+                    stdscr.addch(y, start_x, "|")
+                    stdscr.addch(y, start_x + self.width - 1, "|")
+                except curses.error:
+                    pass
+    
+    def _draw_options(self, stdscr, start_y: int, start_x: int):
+        """選択肢の描画"""
+        options_y = start_y + self.height - 3
+        
+        # 選択肢を中央揃えで配置
+        options_parts = []
+        for i, option in enumerate(self.options):
+            if i == self.selected:
+                options_parts.append(f"[*{option}]")
+            else:
+                options_parts.append(f"[ {option}]")
+        
+        options_text = "  ".join(options_parts)
+        options_x = start_x + (self.width - get_display_width(options_text)) // 2
+        
+        try:
+            stdscr.addstr(options_y, options_x, options_text, curses.A_BOLD)
+        except curses.error:
+            pass
+    
+    def handle_input(self, key: int) -> Optional[str]:
+        """
+        入力処理
+        
+        Args:
+            key: 入力されたキー
+            
+        Returns:
+            選択された選択肢、キャンセルの場合はNone
+        """
+        if key == 27:  # ESC
+            return None
+        elif key == ord('\n') or key == curses.KEY_ENTER or key == 10:  # Enter
+            return self.options[self.selected]
+        elif key == curses.KEY_LEFT or key == ord('h'):
+            self.selected = max(0, self.selected - 1)
+        elif key == curses.KEY_RIGHT or key == ord('l'):
+            self.selected = min(len(self.options) - 1, self.selected + 1)
+        elif key == 9:  # TAB
+            self.selected = (self.selected + 1) % len(self.options)
+        
+        return "continue"
+
+
 class CommandLine:
     """コマンドラインクラス"""
     

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 import locale
 
-from ui import FilePane, StatusBar, CommandLine, get_display_width, truncate_string_by_width
+from ui import FilePane, StatusBar, CommandLine, InWindowDialog, get_display_width, truncate_string_by_width
 from file_ops import FileOperations
 from colors import ColorManager
 from config import Config
@@ -47,8 +47,22 @@ class TwoPaneFiler:
         self.should_exit = False
         
         # モード管理
-        self.mode = 'normal'  # 'normal', 'search', 'edit', 'dialog'
+        self.mode = 'normal'  # 'normal', 'search', 'edit', 'dialog', 'in_window'
         self.command_buffer = ""
+        
+        # 操作状態
+        self.operation_progress = None
+        self.operation_message = ""
+        self.operation_thread = None
+        
+        # 確認ダイアログ
+        self.dialog_message = ""
+        self.dialog_options = []
+        self.dialog_selected = 0
+        
+        # In-Window ダイアログ
+        self.in_window = None
+        self.in_window_selected = 0
         
         # コンポーネント
         self.config = None
@@ -198,6 +212,8 @@ class TwoPaneFiler:
                 self._handle_edit_mode_input(key)
             elif self.mode == 'dialog':
                 self._handle_dialog_mode_input(key)
+            elif self.mode == 'in_window':
+                self._handle_in_window_input(key)
                 
         except curses.error:
             pass  # 入力エラーを無視
@@ -298,11 +314,33 @@ class TwoPaneFiler:
             self.command_line.draw(self.stdscr, "削除するファイルが選択されていません")
             return
         
-        # 確認ダイアログ表示
-        self.dialog_message = f"削除: {current_file.name}"
-        self.dialog_options = ["はい", "いいえ"]
-        self.dialog_selected = 1  # デフォルトは「いいえ」
-        self.mode = 'dialog'
+        # パスの長さをチェック（日本語対応）
+        src_display = str(current_file.path)
+        
+        # 簡易ダイアログに収まるかチェック
+        short_msg = f"削除: {current_file.name}"
+        if get_display_width(short_msg) + 20 <= self.max_x:  # 選択肢分の余裕
+            # 通常ダイアログ
+            self.dialog_message = short_msg
+            self.dialog_options = ["はい", "いいえ"]
+            self.dialog_selected = 1  # デフォルトは「いいえ」
+            self.mode = 'dialog'
+        else:
+            # In-windowダイアログ
+            content = [
+                f"削除対象: {src_display}",
+                "",
+                "⚠️  この操作は元に戻せません"
+            ]
+            self.in_window = InWindowDialog(
+                title="ファイル削除の確認",
+                content=content,
+                options=["はい", "いいえ"],
+                selected=1,  # デフォルトは「いいえ」
+                color_manager=self.color_manager
+            )
+            self.mode = 'in_window'
+        
         self.pending_operation = 'delete'
         self.pending_file = current_file
 
@@ -319,11 +357,35 @@ class TwoPaneFiler:
         # 移動先パス
         dst_path = inactive_pane.current_path / current_file.name
         
-        # 確認ダイアログ表示
-        self.dialog_message = f"移動: {current_file.name} → {inactive_pane.current_path.name}"
-        self.dialog_options = ["はい", "いいえ"]
-        self.dialog_selected = 1  # デフォルトは「いいえ」
-        self.mode = 'dialog'
+        # パスの長さをチェック（日本語対応）
+        src_display = str(current_file.path)
+        dst_display = str(dst_path)
+        
+        # 簡易ダイアログに収まるかチェック
+        short_msg = f"移動: {current_file.name} → {inactive_pane.current_path.name}"
+        if get_display_width(short_msg) + 20 <= self.max_x:  # 選択肢分の余裕
+            # 通常ダイアログ
+            self.dialog_message = short_msg
+            self.dialog_options = ["はい", "いいえ"]
+            self.dialog_selected = 1
+            self.mode = 'dialog'
+        else:
+            # In-windowダイアログ
+            content = [
+                f"転送元: {src_display}",
+                "     |",
+                "     |",
+                f"転送先: {dst_display}"
+            ]
+            self.in_window = InWindowDialog(
+                title="ファイル移動の確認",
+                content=content,
+                options=["はい", "いいえ"],
+                selected=1,
+                color_manager=self.color_manager
+            )
+            self.mode = 'in_window'
+        
         self.pending_operation = 'move'
         self.pending_file = current_file
         self.pending_dst = str(dst_path)
@@ -341,11 +403,35 @@ class TwoPaneFiler:
         # コピー先パス
         dst_path = inactive_pane.current_path / current_file.name
         
-        # 確認ダイアログ表示
-        self.dialog_message = f"コピー: {current_file.name} → {inactive_pane.current_path.name}"
-        self.dialog_options = ["はい", "いいえ"]
-        self.dialog_selected = 0  # デフォルトは「はい」
-        self.mode = 'dialog'
+        # パスの長さをチェック（日本語対応）
+        src_display = str(current_file.path)
+        dst_display = str(dst_path)
+        
+        # 簡易ダイアログに収まるかチェック
+        short_msg = f"コピー: {current_file.name} → {inactive_pane.current_path.name}"
+        if get_display_width(short_msg) + 20 <= self.max_x:  # 選択肢分の余裕
+            # 通常ダイアログ
+            self.dialog_message = short_msg
+            self.dialog_options = ["はい", "いいえ"]
+            self.dialog_selected = 0
+            self.mode = 'dialog'
+        else:
+            # In-windowダイアログ
+            content = [
+                f"転送元: {src_display}",
+                "     |",
+                "     |",
+                f"転送先: {dst_display}"
+            ]
+            self.in_window = InWindowDialog(
+                title="ファイルコピーの確認",
+                content=content,
+                options=["はい", "いいえ"],
+                selected=0,
+                color_manager=self.color_manager
+            )
+            self.mode = 'in_window'
+        
         self.pending_operation = 'copy'
         self.pending_file = current_file
         self.pending_dst = str(dst_path)
@@ -546,6 +632,17 @@ class TwoPaneFiler:
             delattr(self, 'pending_file')
         if hasattr(self, 'pending_dst'):
             delattr(self, 'pending_dst')
+    
+    def _clear_in_window_mode(self):
+        """In-windowモードのクリア"""
+        self.in_window = None
+        self.in_window_selected = 0
+        if hasattr(self, 'pending_operation'):
+            delattr(self, 'pending_operation')
+        if hasattr(self, 'pending_file'):
+            delattr(self, 'pending_file')
+        if hasattr(self, 'pending_dst'):
+            delattr(self, 'pending_dst')
 
     def _open_file(self):
         """ファイル開く・ディレクトリ移動"""
@@ -632,6 +729,24 @@ class TwoPaneFiler:
         elif key == 9:  # TAB
             self.dialog_selected = 1 - self.dialog_selected
 
+    def _handle_in_window_input(self, key):
+        """In-windowダイアログモード入力処理"""
+        if self.in_window:
+            result = self.in_window.handle_input(key)
+            if result == "continue":
+                # 継続（選択肢変更など）
+                pass
+            elif result is None:
+                # キャンセル
+                self.mode = 'normal'
+                self._clear_in_window_mode()
+            else:
+                # 選択肢が選ばれた
+                if result == "はい" and hasattr(self, 'pending_operation'):
+                    self._execute_dialog_operation()
+                self.mode = 'normal'
+                self._clear_in_window_mode()
+
     def update_display(self):
         """表示更新"""
         self.stdscr.clear()
@@ -666,9 +781,17 @@ class TwoPaneFiler:
                 dialog_msg = truncate_string_by_width(dialog_msg, max_msg_width)
             
             msg = f"{dialog_msg} | {options_text}"
+        elif self.mode == 'in_window' and self.in_window:
+            # In-windowダイアログ表示
+            self.in_window.draw(self.stdscr)
         else:
             msg = f"Mode: {self.mode} | Active: {self.active_pane}"
-        self.command_line.draw(self.stdscr, msg)
+        
+        # 通常のコマンドライン表示が必要な場合
+        if self.mode != 'in_window':
+            if 'msg' not in locals():
+                msg = f"Mode: {self.mode} | Active: {self.active_pane}"
+            self.command_line.draw(self.stdscr, msg)
         
         self.stdscr.refresh()
 
