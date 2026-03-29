@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 import locale
 
-from ui import FilePane, StatusBar, CommandLine
+from ui import FilePane, StatusBar, CommandLine, get_display_width, truncate_string_by_width
 from file_ops import FileOperations
 from colors import ColorManager
 from config import Config
@@ -299,7 +299,7 @@ class TwoPaneFiler:
             return
         
         # 確認ダイアログ表示
-        self.dialog_message = f"削除しますか?\n{current_file.path}"
+        self.dialog_message = f"削除: {current_file.name}"
         self.dialog_options = ["はい", "いいえ"]
         self.dialog_selected = 1  # デフォルトは「いいえ」
         self.mode = 'dialog'
@@ -320,7 +320,7 @@ class TwoPaneFiler:
         dst_path = inactive_pane.current_path / current_file.name
         
         # 確認ダイアログ表示
-        self.dialog_message = f"移動しますか?\n{current_file.path}\n↓\n{dst_path}"
+        self.dialog_message = f"移動: {current_file.name} → {inactive_pane.current_path.name}"
         self.dialog_options = ["はい", "いいえ"]
         self.dialog_selected = 1  # デフォルトは「いいえ」
         self.mode = 'dialog'
@@ -342,7 +342,7 @@ class TwoPaneFiler:
         dst_path = inactive_pane.current_path / current_file.name
         
         # 確認ダイアログ表示
-        self.dialog_message = f"コピーしますか?\n{current_file.path}\n↓\n{dst_path}"
+        self.dialog_message = f"コピー: {current_file.name} → {inactive_pane.current_path.name}"
         self.dialog_options = ["はい", "いいえ"]
         self.dialog_selected = 0  # デフォルトは「はい」
         self.mode = 'dialog'
@@ -653,7 +653,19 @@ class TwoPaneFiler:
             selected_indicator = [" ", " "]
             selected_indicator[self.dialog_selected] = "*"
             options_text = f"{selected_indicator[0]}{self.dialog_options[0]} {selected_indicator[1]}{self.dialog_options[1]}"
-            msg = f"{self.dialog_message} | {options_text}"
+            
+            # ダイアログメッセージの処理（改行除去・短縮）
+            dialog_msg = self.dialog_message.replace('\n', ' ').replace('  ', ' ').strip()
+            
+            # 選択肢の表示幅を確保（日本語対応）
+            options_display_width = get_display_width(options_text) + 3  # " | " 分も含む
+            max_msg_width = max(15, self.max_x - options_display_width - 5)  # 余裕を持たせる
+            
+            # メッセージを表示幅ベースで切り詰め
+            if get_display_width(dialog_msg) > max_msg_width:
+                dialog_msg = truncate_string_by_width(dialog_msg, max_msg_width)
+            
+            msg = f"{dialog_msg} | {options_text}"
         else:
             msg = f"Mode: {self.mode} | Active: {self.active_pane}"
         self.command_line.draw(self.stdscr, msg)
