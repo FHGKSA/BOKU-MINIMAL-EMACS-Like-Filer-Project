@@ -35,15 +35,15 @@ def parse_arguments():
     parser.add_argument(
         'left_path', 
         nargs='?', 
-        default=os.getcwd(),
-        help='左ペインの初期ディレクトリ（デフォルト: カレントディレクトリ）'
+        default=str(Path.home()),
+        help='左ペインの初期ディレクトリ（デフォルト: ホームディレクトリ）'
     )
     
     parser.add_argument(
         'right_path', 
         nargs='?', 
-        default=os.getcwd(),
-        help='右ペインの初期ディレクトリ（デフォルト: カレントディレクトリ）'
+        default=str(Path.home()),
+        help='右ペインの初期ディレクトリ（デフォルト: ホームディレクトリ）'
     )
     
     parser.add_argument(

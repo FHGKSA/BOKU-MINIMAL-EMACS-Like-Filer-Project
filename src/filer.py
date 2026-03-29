@@ -290,20 +290,262 @@ class TwoPaneFiler:
             self._switch_to_left_pane()
 
     def _delete_file(self):
-        """ファイル削除（実装予定）"""
-        pass
+        """ファイル削除"""
+        active_pane = self.left_pane if self.active_pane == 'left' else self.right_pane
+        current_file = active_pane.get_current_file()
+        
+        if not current_file:
+            self.command_line.draw(self.stdscr, "削除するファイルが選択されていません")
+            return
+        
+        # 確認ダイアログ表示
+        self.dialog_message = f"削除しますか?\n{current_file.path}"
+        self.dialog_options = ["はい", "いいえ"]
+        self.dialog_selected = 1  # デフォルトは「いいえ」
+        self.mode = 'dialog'
+        self.pending_operation = 'delete'
+        self.pending_file = current_file
 
     def _move_file(self):
-        """ファイル移動（実装予定）"""  
-        pass
+        """ファイル移動"""
+        active_pane = self.left_pane if self.active_pane == 'left' else self.right_pane
+        inactive_pane = self.right_pane if self.active_pane == 'left' else self.left_pane
+        current_file = active_pane.get_current_file()
+        
+        if not current_file:
+            self.command_line.draw(self.stdscr, "移動するファイルが選択されていません")
+            return
+        
+        # 移動先パス
+        dst_path = inactive_pane.current_path / current_file.name
+        
+        # 確認ダイアログ表示
+        self.dialog_message = f"移動しますか?\n{current_file.path}\n↓\n{dst_path}"
+        self.dialog_options = ["はい", "いいえ"]
+        self.dialog_selected = 1  # デフォルトは「いいえ」
+        self.mode = 'dialog'
+        self.pending_operation = 'move'
+        self.pending_file = current_file
+        self.pending_dst = str(dst_path)
 
     def _copy_file(self):
-        """ファイルコピー（実装予定）"""
-        pass
+        """ファイルコピー"""
+        active_pane = self.left_pane if self.active_pane == 'left' else self.right_pane
+        inactive_pane = self.right_pane if self.active_pane == 'left' else self.left_pane
+        current_file = active_pane.get_current_file()
+        
+        if not current_file:
+            self.command_line.draw(self.stdscr, "コピーするファイルが選択されていません")
+            return
+        
+        # コピー先パス
+        dst_path = inactive_pane.current_path / current_file.name
+        
+        # 確認ダイアログ表示
+        self.dialog_message = f"コピーしますか?\n{current_file.path}\n↓\n{dst_path}"
+        self.dialog_options = ["はい", "いいえ"]
+        self.dialog_selected = 0  # デフォルトは「はい」
+        self.mode = 'dialog'
+        self.pending_operation = 'copy'
+        self.pending_file = current_file
+        self.pending_dst = str(dst_path)
 
     def _rename_file(self):
-        """ファイルリネーム（実装予定）"""
-        pass
+        """ファイルリネーム"""
+        active_pane = self.left_pane if self.active_pane == 'left' else self.right_pane
+        current_file = active_pane.get_current_file()
+        
+        if not current_file:
+            self.command_line.draw(self.stdscr, "リネームするファイルが選択されていません")
+            return
+        
+        # 編集モードに移行
+        self.mode = 'edit'
+        self.edit_buffer = current_file.name
+        self.edit_cursor = len(self.edit_buffer)
+        self.pending_operation = 'rename'
+        self.pending_file = current_file
+        self.command_line.draw(self.stdscr, f"新しい名前: {self.edit_buffer}")
+
+    def _execute_edit_operation(self):
+        """編集操作実行"""
+        if self.pending_operation == 'rename' and hasattr(self, 'pending_file'):
+            try:
+                new_name = self.edit_buffer.strip()
+                if not new_name or new_name == self.pending_file.name:
+                    self.command_line.draw(self.stdscr, "リネームをキャンセルしました")
+                else:
+                    # リネーム実行
+                    success = self.file_ops.rename_file(str(self.pending_file.path), new_name)
+                    if success:
+                        self.command_line.draw(self.stdscr, f"リネーム完了: {self.pending_file.name} → {new_name}")
+                        # ペインの更新
+                        active_pane = self.left_pane if self.active_pane == 'left' else self.right_pane
+                        active_pane.refresh_files()
+                    else:
+                        self.command_line.draw(self.stdscr, "リネームに失敗しました")
+            except Exception as e:
+                self.command_line.draw(self.stdscr, f"エラー: {str(e)}")
+        
+        self.mode = 'normal'
+        self._clear_edit_mode()
+
+    def _execute_dialog_operation(self):
+        """ダイアログ操作実行"""
+        try:
+            if self.pending_operation == 'delete' and hasattr(self, 'pending_file'):
+                # 削除実行
+                self._start_delete_operation()
+            elif self.pending_operation == 'copy' and hasattr(self, 'pending_file') and hasattr(self, 'pending_dst'):
+                # コピー実行
+                self._start_copy_operation()  
+            elif self.pending_operation == 'move' and hasattr(self, 'pending_file') and hasattr(self, 'pending_dst'):
+                # 移動実行
+                self._start_move_operation()
+        except Exception as e:
+            self.command_line.draw(self.stdscr, f"エラー: {str(e)}")
+        
+        self.mode = 'normal'
+        self._clear_dialog_mode()
+
+    def _start_delete_operation(self):
+        """削除操作開始"""
+        import threading
+        
+        self.mode = 'operation'
+        self.operation_message = f"削除中: {self.pending_file.name}"
+        self.operation_progress = "0%"
+        
+        def delete_operation():
+            try:
+                success = self.file_ops.delete_file(str(self.pending_file.path))
+                if success:
+                    self.operation_progress = "100% 完了"
+                    # ペインの更新
+                    active_pane = self.left_pane if self.active_pane == 'left' else self.right_pane
+                    active_pane.refresh_files()
+                else:
+                    self.operation_progress = "失敗"
+                
+                # 1秒後にノーマルモードに戻る
+                import time
+                time.sleep(1)
+                self.mode = 'normal'
+                self.operation_progress = None
+                
+            except Exception as e:
+                self.operation_progress = f"エラー: {str(e)}"
+                import time
+                time.sleep(2)
+                self.mode = 'normal'
+                self.operation_progress = None
+        
+        thread = threading.Thread(target=delete_operation)
+        thread.daemon = True
+        thread.start()
+
+    def _start_copy_operation(self):
+        """コピー操作開始"""
+        import threading
+        
+        self.mode = 'operation'
+        self.operation_message = f"コピー中: {self.pending_file.name}"
+        self.operation_progress = "0%"
+        
+        def progress_callback(current, total, filename):
+            percent = int((current / total) * 100)
+            self.operation_progress = f"{percent}% ({current}/{total})"
+        
+        def copy_operation():
+            try:
+                success = self.file_ops.copy_file(
+                    str(self.pending_file.path), 
+                    self.pending_dst,
+                    progress_callback=progress_callback
+                )
+                if success:
+                    self.operation_progress = "100% 完了"
+                    # ペインの更新
+                    inactive_pane = self.right_pane if self.active_pane == 'left' else self.left_pane
+                    inactive_pane.refresh_files()
+                else:
+                    self.operation_progress = "失敗"
+                
+                # 1秒後にノーマルモードに戻る
+                import time
+                time.sleep(1)
+                self.mode = 'normal'
+                self.operation_progress = None
+                
+            except Exception as e:
+                self.operation_progress = f"エラー: {str(e)}"
+                import time
+                time.sleep(2)
+                self.mode = 'normal'
+                self.operation_progress = None
+        
+        thread = threading.Thread(target=copy_operation)
+        thread.daemon = True
+        thread.start()
+
+    def _start_move_operation(self):
+        """移動操作開始"""
+        import threading
+        
+        self.mode = 'operation'
+        self.operation_message = f"移動中: {self.pending_file.name}"
+        self.operation_progress = "0%"
+        
+        def move_operation():
+            try:
+                success = self.file_ops.move_file(str(self.pending_file.path), self.pending_dst)
+                if success:
+                    self.operation_progress = "100% 完了"
+                    # 両ペインの更新
+                    self.left_pane.refresh_files()
+                    self.right_pane.refresh_files()
+                else:
+                    self.operation_progress = "失敗"
+                
+                # 1秒後にノーマルモードに戻る
+                import time
+                time.sleep(1)
+                self.mode = 'normal'
+                self.operation_progress = None
+                
+            except Exception as e:
+                self.operation_progress = f"エラー: {str(e)}"
+                import time
+                time.sleep(2)
+                self.mode = 'normal'
+                self.operation_progress = None
+        
+        thread = threading.Thread(target=move_operation)
+        thread.daemon = True
+        thread.start()
+
+    def _clear_edit_mode(self):
+        """編集モードのクリア"""
+        if hasattr(self, 'edit_buffer'):
+            delattr(self, 'edit_buffer')
+        if hasattr(self, 'edit_cursor'):
+            delattr(self, 'edit_cursor')
+        if hasattr(self, 'pending_operation'):
+            delattr(self, 'pending_operation')
+        if hasattr(self, 'pending_file'):
+            delattr(self, 'pending_file')
+
+    def _clear_dialog_mode(self):
+        """ダイアログモードのクリア"""
+        self.dialog_message = ""
+        self.dialog_options = []
+        self.dialog_selected = 0
+        if hasattr(self, 'pending_operation'):
+            delattr(self, 'pending_operation')
+        if hasattr(self, 'pending_file'):
+            delattr(self, 'pending_file')
+        if hasattr(self, 'pending_dst'):
+            delattr(self, 'pending_dst')
 
     def _open_file(self):
         """ファイル開く・ディレクトリ移動"""
@@ -337,12 +579,58 @@ class TwoPaneFiler:
         pass
 
     def _handle_edit_mode_input(self, key):
-        """編集モードでの入力処理（実装予定）"""
-        pass
+        """編集モード入力処理"""
+        if key == 27:  # ESC: キャンセル
+            self.mode = 'normal'
+            self._clear_edit_mode()
+        elif key == ord('\n') or key == curses.KEY_ENTER or key == 10:  # Enter: 実行
+            self._execute_edit_operation()
+        elif key == curses.KEY_BACKSPACE or key == 8 or key == 127:  # Backspace
+            if self.edit_cursor > 0:
+                self.edit_buffer = self.edit_buffer[:self.edit_cursor-1] + self.edit_buffer[self.edit_cursor:]
+                self.edit_cursor -= 1
+        elif key == 4:  # Ctrl+D: 文字削除
+            if self.edit_cursor < len(self.edit_buffer):
+                self.edit_buffer = self.edit_buffer[:self.edit_cursor] + self.edit_buffer[self.edit_cursor+1:]
+        elif key == 1:  # Ctrl+A: 行頭
+            self.edit_cursor = 0
+        elif key == 5:  # Ctrl+E: 行末
+            self.edit_cursor = len(self.edit_buffer)
+        elif key == 6:  # Ctrl+F: 右移動
+            if self.edit_cursor < len(self.edit_buffer):
+                self.edit_cursor += 1
+        elif key == 2:  # Ctrl+B: 左移動
+            if self.edit_cursor > 0:
+                self.edit_cursor -= 1
+        elif key == 11:  # Ctrl+K: 行末まで削除
+            self.edit_buffer = self.edit_buffer[:self.edit_cursor]
+        elif 32 <= key <= 126:  # 印字可能文字
+            char = chr(key)
+            self.edit_buffer = self.edit_buffer[:self.edit_cursor] + char + self.edit_buffer[self.edit_cursor:]
+            self.edit_cursor += 1
+        
+        # 編集中の表示更新
+        cursor_pos = "◀" if self.edit_cursor == 0 else "▶" if self.edit_cursor == len(self.edit_buffer) else "|"
+        display_text = self.edit_buffer[:self.edit_cursor] + cursor_pos + self.edit_buffer[self.edit_cursor:]
+        self.command_line.draw(self.stdscr, f"新しい名前: {display_text}")
 
     def _handle_dialog_mode_input(self, key):
-        """ダイアログモードでの入力処理（実装予定）"""
-        pass
+        """ダイアログモード入力処理"""
+        if key == 27:  # ESC: キャンセル
+            self.mode = 'normal'
+            self._clear_dialog_mode()
+        elif key == ord('\n') or key == curses.KEY_ENTER or key == 10:  # Enter: 選択実行
+            if self.dialog_selected == 0:  # 「はい」選択時
+                self._execute_dialog_operation()
+            else:
+                self.mode = 'normal'
+                self._clear_dialog_mode()
+        elif key == curses.KEY_LEFT or key == ord('h'):
+            self.dialog_selected = 0
+        elif key == curses.KEY_RIGHT or key == ord('l'):
+            self.dialog_selected = 1
+        elif key == 9:  # TAB
+            self.dialog_selected = 1 - self.dialog_selected
 
     def update_display(self):
         """表示更新"""
@@ -358,8 +646,16 @@ class TwoPaneFiler:
         # ステータスバー
         self.status_bar.draw(self.stdscr, self._get_status_info())
         
-        # コマンドライン
-        msg = f"Mode: {self.mode} | Active: {self.active_pane}"
+        # コマンドライン - モード別表示
+        if self.mode == 'operation' and self.operation_progress:
+            msg = f"Mode: {self.mode} | {self.operation_message} | 進捗: {self.operation_progress}"
+        elif self.mode == 'dialog':
+            selected_indicator = [" ", " "]
+            selected_indicator[self.dialog_selected] = "*"
+            options_text = f"{selected_indicator[0]}{self.dialog_options[0]} {selected_indicator[1]}{self.dialog_options[1]}"
+            msg = f"{self.dialog_message} | {options_text}"
+        else:
+            msg = f"Mode: {self.mode} | Active: {self.active_pane}"
         self.command_line.draw(self.stdscr, msg)
         
         self.stdscr.refresh()

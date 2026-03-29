@@ -14,6 +14,45 @@ import stat
 import time
 import pwd
 import grp
+import unicodedata
+
+
+def get_display_width(text: str) -> int:
+    """文字列の実際の表示幅を計算（全角文字考慮）"""
+    width = 0
+    for char in text:
+        # East Asian Widthを確認
+        eaw = unicodedata.east_asian_width(char)
+        if eaw in ('F', 'W'):  # Full-width or Wide
+            width += 2
+        elif eaw in ('H', 'Na', 'N'):  # Half-width, Narrow, Neutral
+            width += 1
+        else:  # Ambiguous
+            width += 1  # デフォルトは1幅
+    return width
+
+def truncate_string_by_width(text: str, max_width: int, suffix: str = "...") -> str:
+    """表示幅ベースで文字列を切り詰め"""
+    if get_display_width(text) <= max_width:
+        return text
+    
+    # サフィックスの幅を考慮
+    suffix_width = get_display_width(suffix)
+    if suffix_width >= max_width:
+        return suffix[:max_width]
+    
+    target_width = max_width - suffix_width
+    result = ""
+    current_width = 0
+    
+    for char in text:
+        char_width = get_display_width(char)
+        if current_width + char_width > target_width:
+            break
+        result += char
+        current_width += char_width
+    
+    return result + suffix
 
 
 class FileItem:
@@ -337,12 +376,25 @@ class FilePane:
             self._draw_file_item(stdscr, y, file_item, file_index == self.cursor)
 
     def _draw_file_item(self, stdscr, y: int, file_item: FileItem, is_cursor: bool):
-        """ファイル項目の描画"""
-        # カラム幅計算（シンボリックリンク対応で動的調整）
-        available_width = self.width - 24  # マーカー、サイズ、その他固定部分
-        name_width = max(12, available_width // 2)
-        ext_width = max(3, available_width // 4)
-        size_width = 9
+        """ファイル項目の描画（日本語対応改善）"""
+        # 基本カラム幅計算
+        marker_width = 4  # "[M] "
+        size_width = 9    # "サイズ表示"
+        time_width = 8    # "日時表示"
+        
+        # 利用可能幅から固定部分を引いて動的に調整
+        fixed_width = marker_width + size_width + time_width + 6  # 間隔用
+        available_width = max(20, self.width - fixed_width)
+        
+        # 名前と拡張子/リンク先の幅配分
+        if file_item.is_link:
+            # シンボリックリンクの場合はリンク先表示を優先
+            name_width = max(8, int(available_width * 0.5))
+            link_width = max(8, available_width - name_width - 2)
+        else:
+            # 通常ファイルの場合
+            name_width = max(10, int(available_width * 0.65))
+            ext_width = max(3, available_width - name_width - 1)
         
         # 状態マーカー
         if file_item.selected:
@@ -352,27 +404,58 @@ class FilePane:
         else:
             marker = "[ ]"
         
-        # 表示文字列構成（シンボリックリンク対応）
+        # 表示文字列構成
         name_str = file_item.get_display_name_part()
         
-        # 名前部分の長さ制限
-        if len(name_str) > name_width - 4:
-            name_str = name_str[:name_width-7] + "..."
+        # 名前部分の切り詰め（表示幅ベース）
+        name_display = truncate_string_by_width(name_str, name_width - 1)
         
-        ext_str = file_item.extension if not file_item.is_link else ""
+        # 拡張子/リンク先部分
+        if file_item.is_link and file_item.link_target:
+            # シンボリックリンクのリンク先表示
+            target = file_item.link_target
+            ext_display = truncate_string_by_width(f"→{target}", link_width)
+        elif file_item.is_dir:
+            # ディレクトリの場合
+            ext_display = "<DIR>"
+        else:
+            # 通常ファイルの拡張子
+            ext_display = file_item.extension if file_item.extension else ""
+            ext_display = truncate_string_by_width(ext_display, ext_width if not file_item.is_link else link_width)
+        
+        # サイズ表示
         size_str = file_item.get_size_string()
         
-        # シンボリックリンクの場合は特別な表示
-        if file_item.is_link and file_item.link_target:
-            # 短縮されたリンク先表示
-            target = file_item.link_target
-            if len(target) > ext_width:
-                target = target[:ext_width-3] + "..."
-            ext_str = f"→{target}"
+        # 行の構成（幅を考虑したフォーマット）
+        line_parts = []
+        line_parts.append(marker)
+        line_parts.append(" ")
+        line_parts.append(name_display)
         
-        # 行の構成
-        line = f"{marker} {name_str:<{name_width-4}} {ext_str:<{ext_width}} {size_str:>{size_width}}"
-        line = line[:self.width]
+        # 名前部分の実際の表示幅を取得してパディング
+        name_actual_width = get_display_width(name_display)
+        name_padding = max(0, name_width - name_actual_width)
+        line_parts.append(" " * name_padding)
+        
+        line_parts.append(" ")
+        line_parts.append(ext_display)
+        
+        # 拡張子部分のパディング
+        ext_actual_width = get_display_width(ext_display)
+        if file_item.is_link:
+            ext_padding = max(0, link_width - ext_actual_width)
+        else:
+            ext_padding = max(0, ext_width - ext_actual_width)
+        line_parts.append(" " * ext_padding)
+        
+        line_parts.append(" ")
+        line_parts.append(f"{size_str:>{size_width}}")
+        
+        line = "".join(line_parts)
+        
+        # 全体の幅制限
+        if get_display_width(line) > self.width:
+            line = truncate_string_by_width(line, self.width, "")
         
         # カーソル行は反転表示
         attrs = 0
@@ -383,7 +466,13 @@ class FilePane:
         color_pair = self.color_manager.get_file_color(file_item)
         
         try:
-            stdscr.addstr(y, self.start_x, line.ljust(self.width)[:self.width], 
+            # 行の描画（幅を正確に埋める）
+            display_line = line
+            line_width = get_display_width(display_line)
+            if line_width < self.width:
+                display_line += " " * (self.width - line_width)
+            
+            stdscr.addstr(y, self.start_x, display_line[:self.width], 
                          attrs | color_pair)
         except curses.error:
             pass
