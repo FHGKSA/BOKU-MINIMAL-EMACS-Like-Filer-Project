@@ -243,10 +243,20 @@ class TwoPaneFiler:
             self._cursor_up_handled = True  # 重複処理フラグ
         elif key == 14:  # Ctrl+N: 下
             self._move_cursor_down()
-        elif key in [1, 2]:  # Ctrl+A, Ctrl+B: 左ペイン
+        elif key == 1:  # Ctrl+A: 左ペイン
             self._switch_to_left_pane()
-        elif key in [5, 6]:  # Ctrl+E, Ctrl+F: 右ペイン
+        elif key == 2:  # Ctrl+B: 左ペインで親ディレクトリ移動、右ペインで左ペイン切り替え
+            if self.active_pane == 'left':
+                self._go_to_parent_directory()
+            else:
+                self._switch_to_left_pane()
+        elif key == 5:  # Ctrl+E: 右ペイン
             self._switch_to_right_pane()
+        elif key == 6:  # Ctrl+F: 右ペインで親ディレクトリ移動、左ペインで右ペイン切り替え
+            if self.active_pane == 'right':
+                self._go_to_parent_directory()
+            else:
+                self._switch_to_right_pane()
         elif key == 9:  # TAB: ペイン切り替え
             self._toggle_active_pane()
         
@@ -256,9 +266,17 @@ class TwoPaneFiler:
         elif key == curses.KEY_DOWN:
             self._move_cursor_down()
         elif key == curses.KEY_LEFT:
-            self._switch_to_left_pane()
+            # 左ペインで左キーは親ディレクトリ移動、右ペインでは左ペイン切り替え
+            if self.active_pane == 'left':
+                self._go_to_parent_directory()
+            else:
+                self._switch_to_left_pane()
         elif key == curses.KEY_RIGHT:
-            self._switch_to_right_pane()
+            # 右ペインで右キーは親ディレクトリ移動、左ペインでは右ペイン切り替え
+            if self.active_pane == 'right':
+                self._go_to_parent_directory()
+            else:
+                self._switch_to_right_pane()
         
         # ファイル操作
         elif key == ord('D') or key == ord('d'):
@@ -269,6 +287,8 @@ class TwoPaneFiler:
             self._copy_file()
         elif key == ord('R') or key == ord('r'):
             self._rename_file()
+        elif key == ord('K') or key == ord('k'):
+            self._create_directory()
         
         # バックグラウンド転送制御
         elif key == 17:  # Ctrl+Q: 転送キュー表示
@@ -323,6 +343,34 @@ class TwoPaneFiler:
             self._switch_to_right_pane()
         else:
             self._switch_to_left_pane()
+
+    def _go_to_parent_directory(self):
+        """親ディレクトリに移動"""
+        active_pane = self.left_pane if self.active_pane == 'left' else self.right_pane
+        
+        try:
+            if active_pane.go_to_parent_directory():
+                # 親ディレクトリに移動成功
+                self.command_line.draw(self.stdscr, f"親ディレクトリに移動: {active_pane.current_path}")
+                # 1秒後にメッセージをクリア
+                import time
+                import threading
+                def clear_message():
+                    time.sleep(1)
+                    self.command_line.draw(self.stdscr, "")
+                threading.Thread(target=clear_message, daemon=True).start()
+            else:
+                # ルートディレクトリなど、移動できない場合
+                self.command_line.draw(self.stdscr, "これ以上上に移動できません")
+                # 1秒後にメッセージをクリア
+                import time
+                import threading
+                def clear_message():
+                    time.sleep(1)
+                    self.command_line.draw(self.stdscr, "")
+                threading.Thread(target=clear_message, daemon=True).start()
+        except Exception as e:
+            self.command_line.draw(self.stdscr, f"親ディレクトリ移動エラー: {str(e)}")
 
     def _delete_file(self):
         """ファイル削除"""
@@ -544,6 +592,18 @@ class TwoPaneFiler:
         self.pending_file = current_file
         self.command_line.draw(self.stdscr, f"新しい名前: {self.edit_buffer}")
 
+    def _create_directory(self):
+        """新規ディレクトリ作成"""
+        active_pane = self.left_pane if self.active_pane == 'left' else self.right_pane
+        
+        # 編集モードに移行
+        self.mode = 'edit'
+        self.edit_buffer = ""
+        self.edit_cursor = 0
+        self.pending_operation = 'create_directory'
+        self.pending_path = active_pane.current_path
+        self.command_line.draw(self.stdscr, "ディレクトリ名: ")
+
     def _execute_edit_operation(self):
         """編集操作実行"""
         if self.pending_operation == 'rename' and hasattr(self, 'pending_file'):
@@ -561,6 +621,24 @@ class TwoPaneFiler:
                         active_pane.refresh_files()
                     else:
                         self.command_line.draw(self.stdscr, "リネームに失敗しました")
+            except Exception as e:
+                self.command_line.draw(self.stdscr, f"エラー: {str(e)}")
+        elif self.pending_operation == 'create_directory' and hasattr(self, 'pending_path'):
+            try:
+                dir_name = self.edit_buffer.strip()
+                if not dir_name:
+                    self.command_line.draw(self.stdscr, "ディレクトリ作成をキャンセルしました")
+                else:
+                    # ディレクトリ作成実行
+                    dir_path = str(self.pending_path / dir_name)
+                    success = self.file_ops.create_directory(dir_path)
+                    if success:
+                        self.command_line.draw(self.stdscr, f"ディレクトリ作成完了: {dir_name}")
+                        # アクティブペインの更新
+                        active_pane = self.left_pane if self.active_pane == 'left' else self.right_pane
+                        active_pane.refresh_files()
+                    else:
+                        self.command_line.draw(self.stdscr, "ディレクトリ作成に失敗しました")
             except Exception as e:
                 self.command_line.draw(self.stdscr, f"エラー: {str(e)}")
         
@@ -761,6 +839,8 @@ class TwoPaneFiler:
             delattr(self, 'pending_operation')
         if hasattr(self, 'pending_file'):
             delattr(self, 'pending_file')
+        if hasattr(self, 'pending_path'):
+            delattr(self, 'pending_path')
 
     def _clear_dialog_mode(self):
         """ダイアログモードのクリア"""

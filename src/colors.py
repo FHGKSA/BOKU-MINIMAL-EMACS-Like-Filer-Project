@@ -101,6 +101,20 @@ class ColorManager:
             'cursor': (-1, curses.COLOR_WHITE),
             'selected': (curses.COLOR_WHITE, curses.COLOR_BLUE),
             'status': (curses.COLOR_WHITE, curses.COLOR_BLACK),
+            
+            # ダイアログ用
+            'dialog_bg': (curses.COLOR_BLACK, curses.COLOR_WHITE),
+            'dialog_title': (curses.COLOR_WHITE, curses.COLOR_BLUE),
+            'dialog_text': (curses.COLOR_BLACK, curses.COLOR_WHITE),
+            'dialog_options': (curses.COLOR_BLUE, curses.COLOR_WHITE),
+            
+            # 転送状態用（背景色あり）
+            'transfer_waiting': (curses.COLOR_BLACK, curses.COLOR_YELLOW),
+            'transfer_in_progress': (curses.COLOR_BLACK, curses.COLOR_GREEN),
+            'transfer_paused': (curses.COLOR_WHITE, curses.COLOR_BLUE),
+            'transfer_completed': (curses.COLOR_BLACK, curses.COLOR_CYAN),
+            'transfer_failed': (curses.COLOR_WHITE, curses.COLOR_RED),
+            'transfer_cancelled': (curses.COLOR_WHITE, curses.COLOR_MAGENTA),
         }
         
         # 色ペアの作成
@@ -249,6 +263,30 @@ class ColorManager:
     def get_selected_color(self) -> int:
         """選択済みファイルの色を取得"""
         return self.color_pairs.get('selected', 0)
+
+    def get_dialog_color(self, element: str) -> int:
+        """ダイアログ要素の色を取得"""
+        dialog_color_map = {
+            'background': 'dialog_bg',
+            'title': 'dialog_title', 
+            'text': 'dialog_text',
+            'options': 'dialog_options'
+        }
+        color_name = dialog_color_map.get(element, 'dialog_text')
+        return self.color_pairs.get(color_name, curses.A_REVERSE)
+
+    def get_transfer_color(self, status: str) -> int:
+        """転送状態の色を取得"""
+        transfer_color_map = {
+            'waiting': 'transfer_waiting',
+            'in_progress': 'transfer_in_progress',
+            'paused': 'transfer_paused',
+            'completed': 'transfer_completed',
+            'failed': 'transfer_failed',
+            'cancelled': 'transfer_cancelled'
+        }
+        color_name = transfer_color_map.get(status, 'transfer_waiting')
+        return self.color_pairs.get(color_name, 0)
 
     def is_color_supported(self) -> bool:
         """色分けがサポートされているかの判定"""

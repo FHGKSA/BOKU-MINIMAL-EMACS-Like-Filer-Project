@@ -478,18 +478,41 @@ class FilePane:
             pass
 
     def move_cursor_up(self):
-        """カーソル上移動"""
+        """カーソル上移動（循環スクロール）"""
+        if len(self.files) == 0:
+            return
         if self.cursor > 0:
             self.cursor -= 1
+        else:
+            # 最初のファイルで上キーを押すと最後のファイルにループ
+            self.cursor = len(self.files) - 1
 
     def move_cursor_down(self):
-        """カーソル下移動"""
+        """カーソル下移動（循環スクロール）"""
+        if len(self.files) == 0:
+            return
         if self.cursor < len(self.files) - 1:
             self.cursor += 1
+        else:
+            # 最後のファイルで下キーを押すと最初のファイルにループ
+            self.cursor = 0
 
     def set_active(self, active: bool):
         """アクティブ状態設定"""
         self.active = active
+        
+    def go_to_parent_directory(self):
+        """親ディレクトリに移動"""
+        try:
+            parent_path = self.current_path.parent
+            # ルートディレクトリに達していない場合のみ移動
+            if parent_path != self.current_path:
+                self.change_directory(str(parent_path))
+                return True
+            return False
+        except Exception as e:
+            # エラーが発生した場合は移動しない
+            return False
 
     def get_current_file(self) -> Optional[FileItem]:
         """現在のファイル取得"""
@@ -635,19 +658,22 @@ class InWindowDialog:
         # タイトル描画
         title_x = start_x + (self.width - get_display_width(self.title)) // 2
         try:
-            stdscr.addstr(start_y + 1, title_x, self.title, curses.A_BOLD)
+            # タイトル用の色を使用
+            title_color = self.color_manager.get_dialog_color('title') if self.color_manager else curses.A_BOLD | curses.A_REVERSE
+            stdscr.addstr(start_y + 1, title_x, self.title, title_color)
         except curses.error:
             pass
         
         # コンテンツ描画
+        text_color = self.color_manager.get_dialog_color('text') if self.color_manager else curses.A_REVERSE
         for i, line in enumerate(self.content):
             if i >= self.height - 5:  # 選択肢用のスペースを確保
                 break
             y = start_y + 3 + i
-            # 左揃えでコンテンツを表示
+            # 左揃えでコンテンツを表示、背景色付き
             try:
                 display_line = truncate_string_by_width(line, self.width - 4)
-                stdscr.addstr(y, start_x + 2, display_line)
+                stdscr.addstr(y, start_x + 2, display_line, text_color)
             except curses.error:
                 pass
         
@@ -696,7 +722,9 @@ class InWindowDialog:
         options_x = start_x + (self.width - get_display_width(options_text)) // 2
         
         try:
-            stdscr.addstr(options_y, options_x, options_text, curses.A_BOLD)
+            # 選択肢用の色を使用
+            options_color = self.color_manager.get_dialog_color('options') if self.color_manager else curses.A_BOLD | curses.A_REVERSE
+            stdscr.addstr(options_y, options_x, options_text, options_color)
         except curses.error:
             pass
     
@@ -755,7 +783,8 @@ class TransferQueueView:
         # タイトル表示
         title = "転送キュー管理"
         try:
-            stdscr.addstr(0, (max_x - get_display_width(title)) // 2, title, curses.A_BOLD | curses.A_REVERSE)
+            title_color = self.color_manager.get_dialog_color('title') if self.color_manager else curses.A_BOLD | curses.A_REVERSE
+            stdscr.addstr(0, (max_x - get_display_width(title)) // 2, title, title_color)
         except curses.error:
             pass
         
@@ -766,9 +795,10 @@ class TransferQueueView:
             f"完了: {self.summary.get('completed', 0)}  失敗: {self.summary.get('failed', 0)}  キャンセル: {self.summary.get('cancelled', 0)}"
         ]
         
+        summary_color = self.color_manager.get_dialog_color('text') if self.color_manager else curses.A_REVERSE
         for i, line in enumerate(summary_lines):
             try:
-                stdscr.addstr(summary_y + i, 2, line)
+                stdscr.addstr(summary_y + i, 2, line, summary_color)
             except curses.error:
                 pass
         
@@ -782,14 +812,16 @@ class TransferQueueView:
             header_line += f"{header:<{width}} "
         
         try:
-            stdscr.addstr(header_y, 2, header_line, curses.A_REVERSE)
+            header_color = self.color_manager.get_dialog_color('title') if self.color_manager else curses.A_REVERSE
+            stdscr.addstr(header_y, 2, header_line, header_color)
         except curses.error:
             pass
         
         # 区切り線
         separator = "-" * (max_x - 4)
         try:
-            stdscr.addstr(header_y + 1, 2, separator)
+            separator_color = self.color_manager.get_dialog_color('text') if self.color_manager else curses.A_REVERSE
+            stdscr.addstr(header_y + 1, 2, separator, separator_color)
         except curses.error:
             pass
         
@@ -869,9 +901,10 @@ class TransferQueueView:
             "矢印キーで選択移動"
         ]
         
+        footer_color = self.color_manager.get_dialog_color('text') if self.color_manager else curses.A_REVERSE
         for i, line in enumerate(footer_lines):
             try:
-                stdscr.addstr(footer_y + i, 2, line)
+                stdscr.addstr(footer_y + i, 2, line, footer_color)
             except curses.error:
                 pass
         
@@ -894,20 +927,8 @@ class TransferQueueView:
         if not self.color_manager:
             return 0
         
-        color_map = {
-            'waiting': curses.COLOR_YELLOW,
-            'in_progress': curses.COLOR_GREEN,
-            'paused': curses.COLOR_BLUE,
-            'completed': curses.COLOR_CYAN,
-            'failed': curses.COLOR_RED,
-            'cancelled': curses.COLOR_MAGENTA
-        }
-        
-        color = color_map.get(status, curses.COLOR_WHITE)
-        try:
-            return curses.color_pair(color)
-        except:
-            return 0
+        # ColorManagerの新しいメソッドを使用
+        return self.color_manager.get_transfer_color(status)
     
     def _format_speed(self, bytes_per_sec: float) -> str:
         """転送速度をフォーマット"""
