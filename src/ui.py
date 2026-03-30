@@ -724,6 +724,223 @@ class InWindowDialog:
         return "continue"
 
 
+class TransferQueueView:
+    """転送キュービュークラス"""
+    
+    def __init__(self, transfers: List[Dict], summary: Dict, color_manager=None):
+        """
+        初期化
+        
+        Args:
+            transfers: 転送情報リスト
+            summary: 転送サマリー情報
+            color_manager: 色管理オブジェクト
+        """
+        self.transfers = transfers
+        self.summary = summary
+        self.color_manager = color_manager
+        self.scroll_offset = 0
+        
+    def update_data(self, transfers: List[Dict], summary: Dict):
+        """データを更新"""
+        self.transfers = transfers
+        self.summary = summary
+    
+    def draw(self, stdscr, selected: int):
+        """転送キュー画面の描画"""
+        stdscr.clear()
+        
+        max_y, max_x = stdscr.getmaxyx()
+        
+        # タイトル表示
+        title = "転送キュー管理"
+        try:
+            stdscr.addstr(0, (max_x - get_display_width(title)) // 2, title, curses.A_BOLD | curses.A_REVERSE)
+        except curses.error:
+            pass
+        
+        # サマリー表示
+        summary_y = 2
+        summary_lines = [
+            f"待機中: {self.summary.get('waiting', 0)}  実行中: {self.summary.get('in_progress', 0)}  一時停止: {self.summary.get('paused', 0)}",
+            f"完了: {self.summary.get('completed', 0)}  失敗: {self.summary.get('failed', 0)}  キャンセル: {self.summary.get('cancelled', 0)}"
+        ]
+        
+        for i, line in enumerate(summary_lines):
+            try:
+                stdscr.addstr(summary_y + i, 2, line)
+            except curses.error:
+                pass
+        
+        # ヘッダー表示
+        header_y = 5
+        headers = ["状態", "操作", "ソース", "ターゲット", "進捗", "速度", "残り時間"]
+        header_widths = [8, 6, 25, 25, 10, 12, 10]
+        
+        header_line = ""
+        for i, (header, width) in enumerate(zip(headers, header_widths)):
+            header_line += f"{header:<{width}} "
+        
+        try:
+            stdscr.addstr(header_y, 2, header_line, curses.A_REVERSE)
+        except curses.error:
+            pass
+        
+        # 区切り線
+        separator = "-" * (max_x - 4)
+        try:
+            stdscr.addstr(header_y + 1, 2, separator)
+        except curses.error:
+            pass
+        
+        # 転送一覧表示
+        list_start_y = header_y + 2
+        visible_height = max_y - list_start_y - 3  # フッター用スペース
+        
+        # スクロール調整
+        if selected < self.scroll_offset:
+            self.scroll_offset = selected
+        elif selected >= self.scroll_offset + visible_height:
+            self.scroll_offset = selected - visible_height + 1
+        
+        for i in range(visible_height):
+            transfer_index = self.scroll_offset + i
+            if transfer_index >= len(self.transfers):
+                break
+            
+            transfer = self.transfers[transfer_index]
+            y = list_start_y + i
+            
+            # 選択行の強調
+            attrs = curses.A_REVERSE if transfer_index == selected else 0
+            
+            # 状態表示
+            status_text = self._get_status_display(transfer['status'])
+            
+            # 進捗表示
+            progress_text = f"{transfer['progress']*100:5.1f}%"
+            if transfer['status'] == 'in_progress':
+                # 進捗バーを追加
+                bar_width = 8
+                filled = int(transfer['progress'] * bar_width)
+                progress_bar = "█" * filled + "░" * (bar_width - filled)
+                progress_text = f"{progress_bar} {transfer['progress']*100:3.0f}%"
+            
+            # 速度表示
+            if transfer['transfer_speed'] > 0:
+                speed_text = self._format_speed(transfer['transfer_speed'])
+            else:
+                speed_text = "--"
+            
+            # 残り時間表示
+            if transfer['estimated_time_remaining'] > 0:
+                time_text = self._format_time_remaining(transfer['estimated_time_remaining'])
+            else:
+                time_text = "--"
+            
+            # パス表示（短縮）
+            src_display = truncate_string_by_width(transfer['src_path'], 23)
+            dst_display = truncate_string_by_width(transfer['dst_path'], 23)
+            
+            # 行の構成
+            line_parts = [
+                f"{status_text:<8}",
+                f"{transfer['operation']:<6}",
+                f"{src_display:<25}",
+                f"{dst_display:<25}",
+                f"{progress_text:<10}",
+                f"{speed_text:<12}",
+                f"{time_text:<10}"
+            ]
+            
+            line = " ".join(line_parts)
+            
+            try:
+                # 色分け
+                color_pair = self._get_transfer_color(transfer['status'])
+                stdscr.addstr(y, 2, line[:max_x-3], attrs | color_pair)
+            except curses.error:
+                pass
+        
+        # フッター表示
+        footer_y = max_y - 2
+        footer_lines = [
+            "操作: [P]一時停止/再開 [C]キャンセル [D]削除(完了済み) [R]更新 [Q]戻る",
+            "矢印キーで選択移動"
+        ]
+        
+        for i, line in enumerate(footer_lines):
+            try:
+                stdscr.addstr(footer_y + i, 2, line)
+            except curses.error:
+                pass
+        
+        stdscr.refresh()
+    
+    def _get_status_display(self, status: str) -> str:
+        """状態表示文字列を取得"""
+        status_map = {
+            'waiting': '待機中',
+            'in_progress': '実行中',
+            'paused': '一時停止',
+            'completed': '完了',
+            'failed': '失敗',
+            'cancelled': 'キャンセル'
+        }
+        return status_map.get(status, status)
+    
+    def _get_transfer_color(self, status: str) -> int:
+        """転送状態に応じた色を取得"""
+        if not self.color_manager:
+            return 0
+        
+        color_map = {
+            'waiting': curses.COLOR_YELLOW,
+            'in_progress': curses.COLOR_GREEN,
+            'paused': curses.COLOR_BLUE,
+            'completed': curses.COLOR_CYAN,
+            'failed': curses.COLOR_RED,
+            'cancelled': curses.COLOR_MAGENTA
+        }
+        
+        color = color_map.get(status, curses.COLOR_WHITE)
+        try:
+            return curses.color_pair(color)
+        except:
+            return 0
+    
+    def _format_speed(self, bytes_per_sec: float) -> str:
+        """転送速度をフォーマット"""
+        if bytes_per_sec == 0:
+            return "0 B/s"
+        
+        units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+        unit_index = 0
+        speed = bytes_per_sec
+        
+        while speed >= 1024 and unit_index < len(units) - 1:
+            speed /= 1024
+            unit_index += 1
+        
+        return f"{speed:.1f} {units[unit_index]}"
+    
+    def _format_time_remaining(self, seconds: float) -> str:
+        """残り時間をフォーマット"""
+        if seconds <= 0:
+            return "--:--"
+        
+        if seconds < 60:
+            return f"{int(seconds)}秒"
+        elif seconds < 3600:
+            minutes = int(seconds / 60)
+            secs = int(seconds % 60)
+            return f"{minutes}:{secs:02d}"
+        else:
+            hours = int(seconds / 3600)
+            minutes = int((seconds % 3600) / 60)
+            return f"{hours}:{minutes:02d}:00"
+
+
 class CommandLine:
     """コマンドラインクラス"""
     

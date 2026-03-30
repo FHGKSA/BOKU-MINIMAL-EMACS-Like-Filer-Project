@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 import locale
 
-from ui import FilePane, StatusBar, CommandLine, InWindowDialog, get_display_width, truncate_string_by_width
+from ui import FilePane, StatusBar, CommandLine, InWindowDialog, TransferQueueView, get_display_width, truncate_string_by_width
 from file_ops import FileOperations
 from colors import ColorManager
 from config import Config
@@ -47,7 +47,7 @@ class TwoPaneFiler:
         self.should_exit = False
         
         # モード管理
-        self.mode = 'normal'  # 'normal', 'search', 'edit', 'dialog', 'in_window'
+        self.mode = 'normal'  # 'normal', 'search', 'edit', 'dialog', 'in_window', 'transfer_queue'
         self.command_buffer = ""
         
         # 操作状態
@@ -63,6 +63,10 @@ class TwoPaneFiler:
         # In-Window ダイアログ
         self.in_window = None
         self.in_window_selected = 0
+        
+        # 転送キュー画面
+        self.transfer_queue_view = None
+        self.transfer_queue_selected = 0
         
         # コンポーネント
         self.config = None
@@ -214,6 +218,8 @@ class TwoPaneFiler:
                 self._handle_dialog_mode_input(key)
             elif self.mode == 'in_window':
                 self._handle_in_window_input(key)
+            elif self.mode == 'transfer_queue':
+                self._handle_transfer_queue_input(key)
                 
         except curses.error:
             pass  # 入力エラーを無視
@@ -234,6 +240,7 @@ class TwoPaneFiler:
         # カーソル移動 - Emacsスタイル
         if key == 16:  # Ctrl+P: 上
             self._move_cursor_up()
+            self._cursor_up_handled = True  # 重複処理フラグ
         elif key == 14:  # Ctrl+N: 下
             self._move_cursor_down()
         elif key in [1, 2]:  # Ctrl+A, Ctrl+B: 左ペイン
@@ -262,6 +269,18 @@ class TwoPaneFiler:
             self._copy_file()
         elif key == ord('R') or key == ord('r'):
             self._rename_file()
+        
+        # バックグラウンド転送制御
+        elif key == 17:  # Ctrl+Q: 転送キュー表示
+            self._show_transfer_queue()
+        elif key == 16:  # Ctrl+P: 転送一時停止/再開（重複チェック後に処理）
+            if hasattr(self, '_cursor_up_handled'):
+                # すでにカーソル移動で処理済みの場合はスキップ
+                delattr(self, '_cursor_up_handled')
+            else:
+                self._toggle_transfer_pause()
+        elif key == 24:  # Ctrl+X: 転送キャンセル
+            self._cancel_current_transfer()
         
         # その他のキー
         elif key == 10 or key == 13:  # Enter
@@ -357,38 +376,74 @@ class TwoPaneFiler:
         # 移動先パス
         dst_path = inactive_pane.current_path / current_file.name
         
+        # ファイルサイズチェック（100MB以上でバックグラウンド転送を提案）
+        large_file_threshold = 100 * 1024 * 1024  # 100MB
+        is_large_file = False
+        
+        if current_file.is_dir:
+            # ディレクトリの場合は常にバックグラウンド転送を提案
+            is_large_file = True
+        elif hasattr(current_file, 'size') and current_file.size > large_file_threshold:
+            is_large_file = True
+        
         # パスの長さをチェック（日本語対応）
         src_display = str(current_file.path)
         dst_display = str(dst_path)
         
-        # 簡易ダイアログに収まるかチェック
-        short_msg = f"移動: {current_file.name} → {inactive_pane.current_path.name}"
-        if get_display_width(short_msg) + 20 <= self.max_x:  # 選択肢分の余裕
-            # 通常ダイアログ
-            self.dialog_message = short_msg
-            self.dialog_options = ["はい", "いいえ"]
-            self.dialog_selected = 1
-            self.mode = 'dialog'
-        else:
-            # In-windowダイアログ
+        if is_large_file:
+            # 大きなファイル/ディレクトリの場合はバックグラウンド転送オプションを提供
             content = [
                 f"転送元: {src_display}",
                 "     |",
                 "     |",
-                f"転送先: {dst_display}"
+                f"転送先: {dst_display}",
+                "",
+                "大容量ファイル/ディレクトリです。"
             ]
             self.in_window = InWindowDialog(
                 title="ファイル移動の確認",
                 content=content,
-                options=["はい", "いいえ"],
-                selected=1,
+                options=["バックグラウンド", "通常", "キャンセル"],
+                selected=0,
                 color_manager=self.color_manager
             )
             self.mode = 'in_window'
-        
-        self.pending_operation = 'move'
-        self.pending_file = current_file
-        self.pending_dst = str(dst_path)
+            self.pending_operation = 'move'
+            self.pending_file = current_file
+            self.pending_dst = str(dst_path)
+            self.pending_background = True
+        else:
+            # 通常サイズの場合は従来通り
+            # 簡易ダイアログに収まるかチェック
+            short_msg = f"移動: {current_file.name} → {inactive_pane.current_path.name}"
+            if get_display_width(short_msg) + 20 <= self.max_x:  # 選択肢分の余裕
+                # 通常ダイアログ
+                self.dialog_message = short_msg
+                self.dialog_options = ["はい", "いいえ"]
+                self.dialog_selected = 1
+                self.mode = 'dialog'
+            else:
+                # In-windowダイアログ
+                content = [
+                    f"転送元: {src_display}",
+                    "     |",
+                    "     |",
+                    f"転送先: {dst_display}"
+                ]
+                self.in_window = InWindowDialog(
+                    title="ファイル移動の確認",
+                    content=content,
+                    options=["はい", "いいえ"],
+                    selected=1,
+                    color_manager=self.color_manager
+                )
+                self.mode = 'in_window'
+            
+            self.pending_operation = 'move'
+            self.pending_file = current_file
+            self.pending_dst = str(dst_path)
+            # 通常転送の場合はFalseをセット
+            self.pending_background = False
 
     def _copy_file(self):
         """ファイルコピー"""
@@ -403,38 +458,74 @@ class TwoPaneFiler:
         # コピー先パス
         dst_path = inactive_pane.current_path / current_file.name
         
+        # ファイルサイズチェック（100MB以上でバックグラウンド転送を提案）
+        large_file_threshold = 100 * 1024 * 1024  # 100MB
+        is_large_file = False
+        
+        if current_file.is_dir:
+            # ディレクトリの場合は常にバックグラウンド転送を提案
+            is_large_file = True
+        elif hasattr(current_file, 'size') and current_file.size > large_file_threshold:
+            is_large_file = True
+        
         # パスの長さをチェック（日本語対応）
         src_display = str(current_file.path)
         dst_display = str(dst_path)
         
-        # 簡易ダイアログに収まるかチェック
-        short_msg = f"コピー: {current_file.name} → {inactive_pane.current_path.name}"
-        if get_display_width(short_msg) + 20 <= self.max_x:  # 選択肢分の余裕
-            # 通常ダイアログ
-            self.dialog_message = short_msg
-            self.dialog_options = ["はい", "いいえ"]
-            self.dialog_selected = 0
-            self.mode = 'dialog'
-        else:
-            # In-windowダイアログ
+        if is_large_file:
+            # 大きなファイル/ディレクトリの場合はバックグラウンド転送オプションを提供
             content = [
                 f"転送元: {src_display}",
                 "     |",
-                "     |",
-                f"転送先: {dst_display}"
+                "     |", 
+                f"転送先: {dst_display}",
+                "",
+                "大容量ファイル/ディレクトリです。"
             ]
             self.in_window = InWindowDialog(
                 title="ファイルコピーの確認",
                 content=content,
-                options=["はい", "いいえ"],
+                options=["バックグラウンド", "通常", "キャンセル"],
                 selected=0,
                 color_manager=self.color_manager
             )
             self.mode = 'in_window'
-        
-        self.pending_operation = 'copy'
-        self.pending_file = current_file
-        self.pending_dst = str(dst_path)
+            self.pending_operation = 'copy'
+            self.pending_file = current_file
+            self.pending_dst = str(dst_path)
+            self.pending_background = True
+        else:
+            # 通常サイズの場合は従来通り
+            # 簡易ダイアログに収まるかチェック
+            short_msg = f"コピー: {current_file.name} → {inactive_pane.current_path.name}"
+            if get_display_width(short_msg) + 20 <= self.max_x:  # 選択肢分の余裕
+                # 通常ダイアログ
+                self.dialog_message = short_msg
+                self.dialog_options = ["はい", "いいえ"]
+                self.dialog_selected = 0
+                self.mode = 'dialog'
+            else:
+                # In-windowダイアログ
+                content = [
+                    f"転送元: {src_display}",
+                    "     |",
+                    "     |",
+                    f"転送先: {dst_display}"
+                ]
+                self.in_window = InWindowDialog(
+                    title="ファイルコピーの確認",
+                    content=content,
+                    options=["はい", "いいえ"],
+                    selected=0,
+                    color_manager=self.color_manager
+                )
+                self.mode = 'in_window'
+            
+            self.pending_operation = 'copy'
+            self.pending_file = current_file
+            self.pending_dst = str(dst_path)
+            # 通常転送の場合はFalseをセット
+            self.pending_background = False
 
     def _rename_file(self):
         """ファイルリネーム"""
@@ -534,81 +625,131 @@ class TwoPaneFiler:
         """コピー操作開始"""
         import threading
         
-        self.mode = 'operation'
-        self.operation_message = f"コピー中: {self.pending_file.name}"
-        self.operation_progress = "0%"
+        # バックグラウンド転送かどうかチェック
+        use_background = getattr(self, 'pending_background', False)
         
-        def progress_callback(current, total, filename):
-            percent = int((current / total) * 100)
-            self.operation_progress = f"{percent}% ({current}/{total})"
-        
-        def copy_operation():
+        if use_background:
+            # バックグラウンド転送キューに追加
             try:
-                success = self.file_ops.copy_file(
-                    str(self.pending_file.path), 
-                    self.pending_dst,
-                    progress_callback=progress_callback
+                transfer_id = self.file_ops.add_background_copy(
+                    str(self.pending_file.path),
+                    self.pending_dst
                 )
-                if success:
-                    self.operation_progress = "100% 完了"
-                    # ペインの更新
-                    inactive_pane = self.right_pane if self.active_pane == 'left' else self.left_pane
-                    inactive_pane.refresh_files()
-                else:
-                    self.operation_progress = "失敗"
-                
-                # 1秒後にノーマルモードに戻る
+                self.command_line.draw(
+                    self.stdscr, 
+                    f"バックグラウンド転送キューに追加: {self.pending_file.name} (ID: {transfer_id[:8]})"
+                )
+                # 2秒後にメッセージをクリア
                 import time
-                time.sleep(1)
-                self.mode = 'normal'
-                self.operation_progress = None
-                
+                import threading
+                def clear_message():
+                    time.sleep(2)
+                    self.command_line.draw(self.stdscr, "")
+                threading.Thread(target=clear_message, daemon=True).start()
             except Exception as e:
-                self.operation_progress = f"エラー: {str(e)}"
-                import time
-                time.sleep(2)
-                self.mode = 'normal'
-                self.operation_progress = None
-        
-        thread = threading.Thread(target=copy_operation)
-        thread.daemon = True
-        thread.start()
+                self.command_line.draw(self.stdscr, f"バックグラウンド転送追加エラー: {str(e)}")
+        else:
+            # 従来の同期転送
+            self.mode = 'operation'
+            self.operation_message = f"コピー中: {self.pending_file.name}"
+            self.operation_progress = "0%"
+            
+            def progress_callback(current, total, filename):
+                percent = int((current / total) * 100)
+                self.operation_progress = f"{percent}% ({current}/{total})"
+            
+            def copy_operation():
+                try:
+                    success = self.file_ops.copy_file(
+                        str(self.pending_file.path), 
+                        self.pending_dst,
+                        progress_callback=progress_callback
+                    )
+                    if success:
+                        self.operation_progress = "100% 完了"
+                        # ペインの更新
+                        inactive_pane = self.right_pane if self.active_pane == 'left' else self.left_pane
+                        inactive_pane.refresh_files()
+                    else:
+                        self.operation_progress = "失敗"
+                    
+                    # 1秒後にノーマルモードに戻る
+                    import time
+                    time.sleep(1)
+                    self.mode = 'normal'
+                    self.operation_progress = None
+                    
+                except Exception as e:
+                    self.operation_progress = f"エラー: {str(e)}"
+                    import time
+                    time.sleep(2)
+                    self.mode = 'normal'
+                    self.operation_progress = None
+            
+            thread = threading.Thread(target=copy_operation)
+            thread.daemon = True
+            thread.start()
 
     def _start_move_operation(self):
         """移動操作開始"""
         import threading
         
-        self.mode = 'operation'
-        self.operation_message = f"移動中: {self.pending_file.name}"
-        self.operation_progress = "0%"
+        # バックグラウンド転送かどうかチェック
+        use_background = getattr(self, 'pending_background', False)
         
-        def move_operation():
+        if use_background:
+            # バックグラウンド転送キューに追加
             try:
-                success = self.file_ops.move_file(str(self.pending_file.path), self.pending_dst)
-                if success:
-                    self.operation_progress = "100% 完了"
-                    # 両ペインの更新
-                    self.left_pane.refresh_files()
-                    self.right_pane.refresh_files()
-                else:
-                    self.operation_progress = "失敗"
-                
-                # 1秒後にノーマルモードに戻る
+                transfer_id = self.file_ops.add_background_move(
+                    str(self.pending_file.path),
+                    self.pending_dst
+                )
+                self.command_line.draw(
+                    self.stdscr, 
+                    f"バックグラウンド転送キューに追加: {self.pending_file.name} (ID: {transfer_id[:8]})"
+                )
+                # 2秒後にメッセージをクリア
                 import time
-                time.sleep(1)
-                self.mode = 'normal'
-                self.operation_progress = None
-                
+                import threading
+                def clear_message():
+                    time.sleep(2)
+                    self.command_line.draw(self.stdscr, "")
+                threading.Thread(target=clear_message, daemon=True).start()
             except Exception as e:
-                self.operation_progress = f"エラー: {str(e)}"
-                import time
-                time.sleep(2)
-                self.mode = 'normal'
-                self.operation_progress = None
-        
-        thread = threading.Thread(target=move_operation)
-        thread.daemon = True
-        thread.start()
+                self.command_line.draw(self.stdscr, f"バックグラウンド転送追加エラー: {str(e)}")
+        else:
+            # 従来の同期移動
+            self.mode = 'operation'
+            self.operation_message = f"移動中: {self.pending_file.name}"
+            self.operation_progress = "0%"
+            
+            def move_operation():
+                try:
+                    success = self.file_ops.move_file(str(self.pending_file.path), self.pending_dst)
+                    if success:
+                        self.operation_progress = "100% 完了"
+                        # 両ペインの更新
+                        self.left_pane.refresh_files()
+                        self.right_pane.refresh_files()
+                    else:
+                        self.operation_progress = "失敗"
+                    
+                    # 1秒後にノーマルモードに戻る
+                    import time
+                    time.sleep(1)
+                    self.mode = 'normal'
+                    self.operation_progress = None
+                    
+                except Exception as e:
+                    self.operation_progress = f"エラー: {str(e)}"
+                    import time
+                    time.sleep(2)
+                    self.mode = 'normal'
+                    self.operation_progress = None
+            
+            thread = threading.Thread(target=move_operation)
+            thread.daemon = True
+            thread.start()
 
     def _clear_edit_mode(self):
         """編集モードのクリア"""
@@ -632,6 +773,8 @@ class TwoPaneFiler:
             delattr(self, 'pending_file')
         if hasattr(self, 'pending_dst'):
             delattr(self, 'pending_dst')
+        if hasattr(self, 'pending_background'):
+            delattr(self, 'pending_background')
     
     def _clear_in_window_mode(self):
         """In-windowモードのクリア"""
@@ -643,6 +786,144 @@ class TwoPaneFiler:
             delattr(self, 'pending_file')
         if hasattr(self, 'pending_dst'):
             delattr(self, 'pending_dst')
+        if hasattr(self, 'pending_background'):
+            delattr(self, 'pending_background')
+
+    # バックグラウンド転送機能
+    
+    def _show_transfer_queue(self):
+        """転送キュー表示"""
+        from ui import TransferQueueView
+        
+        # 転送情報を取得
+        transfers = self.file_ops.get_all_transfers()
+        summary = self.file_ops.get_transfer_summary()
+        
+        self.transfer_queue_view = TransferQueueView(
+            transfers=transfers,
+            summary=summary,
+            color_manager=self.color_manager
+        )
+        self.mode = 'transfer_queue'
+        self.transfer_queue_selected = 0
+    
+    def _toggle_transfer_pause(self):
+        """現在選択中の転送を一時停止/再開"""
+        transfers = self.file_ops.get_all_transfers()
+        active_transfers = [t for t in transfers if t['status'] in ['in_progress', 'paused']]
+        
+        if not active_transfers:
+            self.command_line.draw(self.stdscr, "一時停止/再開可能な転送がありません")
+            return
+        
+        # 最新の転送を対象とする
+        transfer = active_transfers[0]
+        transfer_id = transfer['id']
+        
+        if transfer['status'] == 'in_progress':
+            success = self.file_ops.pause_transfer(transfer_id)
+            if success:
+                self.command_line.draw(self.stdscr, f"転送を一時停止しました: {transfer['src_path']}")
+            else:
+                self.command_line.draw(self.stdscr, "転送の一時停止に失敗しました")
+        elif transfer['status'] == 'paused':
+            success = self.file_ops.resume_transfer(transfer_id)
+            if success:
+                self.command_line.draw(self.stdscr, f"転送を再開しました: {transfer['src_path']}")
+            else:
+                self.command_line.draw(self.stdscr, "転送の再開に失敗しました")
+    
+    def _cancel_current_transfer(self):
+        """現在選択中の転送をキャンセル"""
+        transfers = self.file_ops.get_all_transfers()
+        active_transfers = [t for t in transfers if t['status'] in ['waiting', 'in_progress', 'paused']]
+        
+        if not active_transfers:
+            self.command_line.draw(self.stdscr, "キャンセル可能な転送がありません")
+            return
+        
+        # 最新の転送を対象とする
+        transfer = active_transfers[0]
+        transfer_id = transfer['id']
+        
+        success = self.file_ops.cancel_transfer(transfer_id)
+        if success:
+            self.command_line.draw(self.stdscr, f"転送をキャンセルしました: {transfer['src_path']}")
+        else:
+            self.command_line.draw(self.stdscr, "転送のキャンセルに失敗しました")
+    
+    def _start_background_copy(self, src_path: str, dst_path: str, priority: int = 0):
+        """バックグラウンドコピーを開始"""
+        transfer_id = self.file_ops.start_background_copy(src_path, dst_path, priority)
+        return transfer_id
+    
+    def _start_background_move(self, src_path: str, dst_path: str, priority: int = 0):
+        """バックグラウンド移動を開始"""
+        transfer_id = self.file_ops.start_background_move(src_path, dst_path, priority)
+        return transfer_id
+    
+    def _handle_transfer_queue_input(self, key):
+        """転送キューモード入力処理"""
+        if key == 27:  # ESC: 戻る
+            self.mode = 'normal'
+            self.transfer_queue_view = None
+        elif key == ord('q') or key == ord('Q'):  # Q: 戻る
+            self.mode = 'normal'
+            self.transfer_queue_view = None
+        elif key == curses.KEY_UP or key == ord('k'):
+            if self.transfer_queue_selected > 0:
+                self.transfer_queue_selected -= 1
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            transfers = self.file_ops.get_all_transfers()
+            if self.transfer_queue_selected < len(transfers) - 1:
+                self.transfer_queue_selected += 1
+        elif key == ord('p') or key == ord('P'):  # P: 一時停止/再開
+            self._pause_resume_selected_transfer()
+        elif key == ord('c') or key == ord('C'):  # C: キャンセル
+            self._cancel_selected_transfer()
+        elif key == ord('d') or key == ord('D'):  # D: 削除（完了済みのみ）
+            self._remove_selected_transfer()
+        elif key == ord('r') or key == ord('R'):  # R: 画面更新
+            self._refresh_transfer_queue()
+    
+    def _pause_resume_selected_transfer(self):
+        """選択中の転送を一時停止/再開"""
+        transfers = self.file_ops.get_all_transfers()
+        if 0 <= self.transfer_queue_selected < len(transfers):
+            transfer = transfers[self.transfer_queue_selected]
+            transfer_id = transfer['id']
+            
+            if transfer['status'] == 'in_progress':
+                self.file_ops.pause_transfer(transfer_id)
+            elif transfer['status'] == 'paused':
+                self.file_ops.resume_transfer(transfer_id)
+    
+    def _cancel_selected_transfer(self):
+        """選択中の転送をキャンセル"""
+        transfers = self.file_ops.get_all_transfers()
+        if 0 <= self.transfer_queue_selected < len(transfers):
+            transfer = transfers[self.transfer_queue_selected]
+            transfer_id = transfer['id']
+            
+            if transfer['status'] in ['waiting', 'in_progress', 'paused']:
+                self.file_ops.cancel_transfer(transfer_id)
+    
+    def _remove_selected_transfer(self):
+        """選択中の転送を削除（完了済みのみ）"""
+        transfers = self.file_ops.get_all_transfers()
+        if 0 <= self.transfer_queue_selected < len(transfers):
+            transfer = transfers[self.transfer_queue_selected]
+            
+            if transfer['status'] in ['completed', 'failed', 'cancelled']:
+                # 完了した転送のみクリア可能
+                self.file_ops.clear_completed_transfers()
+    
+    def _refresh_transfer_queue(self):
+        """転送キュー画面を更新"""
+        if self.transfer_queue_view:
+            transfers = self.file_ops.get_all_transfers()
+            summary = self.file_ops.get_transfer_summary()
+            self.transfer_queue_view.update_data(transfers, summary)
 
     def _open_file(self):
         """ファイル開く・ディレクトリ移動"""
@@ -742,8 +1023,20 @@ class TwoPaneFiler:
                 self._clear_in_window_mode()
             else:
                 # 選択肢が選ばれた
-                if result == "はい" and hasattr(self, 'pending_operation'):
-                    self._execute_dialog_operation()
+                if hasattr(self, 'pending_operation'):
+                    if result == "はい":
+                        # 通常の操作実行（バックグラウンド転送=False）
+                        self.pending_background = False
+                        self._execute_dialog_operation()
+                    elif result == "バックグラウンド":
+                        # バックグラウンド転送実行
+                        self.pending_background = True
+                        self._execute_dialog_operation()
+                    elif result == "通常":
+                        # 通常転送実行
+                        self.pending_background = False
+                        self._execute_dialog_operation()
+                    # "キャンセル"やその他の場合は何もしない
                 self.mode = 'normal'
                 self._clear_in_window_mode()
 
@@ -784,13 +1077,22 @@ class TwoPaneFiler:
         elif self.mode == 'in_window' and self.in_window:
             # In-windowダイアログ表示
             self.in_window.draw(self.stdscr)
+        elif self.mode == 'transfer_queue' and self.transfer_queue_view:
+            # 転送キュー画面表示
+            self.transfer_queue_view.draw(self.stdscr, self.transfer_queue_selected)
         else:
             msg = f"Mode: {self.mode} | Active: {self.active_pane}"
         
         # 通常のコマンドライン表示が必要な場合
-        if self.mode != 'in_window':
+        if self.mode not in ['in_window', 'transfer_queue']:
             if 'msg' not in locals():
                 msg = f"Mode: {self.mode} | Active: {self.active_pane}"
+            
+            # アクティブ転送数を表示に含める
+            active_count = self.file_ops.get_active_transfer_count()
+            if active_count > 0:
+                msg += f" | 転送中: {active_count}"
+            
             self.command_line.draw(self.stdscr, msg)
         
         self.stdscr.refresh()
